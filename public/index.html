@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Access</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <video id="myVideo" autoplay></video>
+    <button onclick="stopRecording()">Stop Recording</button>
+    <button onclick="uploadToLeaderboard()">Update leaderboard</button>
+    <button onclick="fetchS3ObjectList()">List Contents</button>
+    <button onclick="getObjectFromS3()">Fetch object</button>
+
+
+    <table>
+        <caption>Leaderboard</caption>
+        <thead>
+            <tr>
+                <th>Place</th>
+                <th>UserID</th>
+                <th>Reaction Time (ms)</th>
+            </tr>
+        </thead>
+        <tbody>
+            
+        </tbody>
+    </table>
+    <script>
+
+        let mediaRecorder;
+        let recordedChunks = [];
+
+        function displayTop10(users) {
+            // Sort the users by reactionTime in ascending order
+            users.sort((a, b) => a.reactionTime - b.reactionTime);
+
+            // Get the leaderboard table body
+            const leaderboardBody = document.getElementById("leaderboard").getElementsByTagName('tbody')[0];
+
+            // Clear existing rows
+            leaderboardBody.innerHTML = '';
+
+            // Loop through the top 10 users or available users
+            const topUsers = users.slice(0, 10);
+            topUsers.forEach((user, index) => {
+                // Create a new row
+                const newRow = leaderboardBody.insertRow();
+
+                // Insert cells for place, userID, and reaction time
+                const cellPlace = newRow.insertCell(0);
+                const cellUserID = newRow.insertCell(1);
+                const cellReactionTime = newRow.insertCell(2);
+
+                // Set the text content for each cell
+                cellPlace.textContent = index + 1; // Place
+                cellUserID.textContent = user.userID; // UserID
+                cellReactionTime.textContent = user.reactionTime; // Reaction Time
+            });
+        }
+
+        function generateRandomString() {
+            const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'; // Define possible letters
+            const numbers = '0123456789'; // Define possible numbers
+
+            let randomLetters = '';
+            let randomNumbers = '';
+
+            // Generate 3 random letters
+            for (let i = 0; i < 3; i++) {
+                const randomIndex = Math.floor(Math.random() * letters.length);
+                randomLetters += letters[randomIndex];
+            }
+
+            // Generate 3 random numbers
+            for (let i = 0; i < 3; i++) {
+                const randomIndex = Math.floor(Math.random() * numbers.length);
+                randomNumbers += numbers[randomIndex];
+            }
+
+            // Concatenate letters and numbers
+            return randomLetters + randomNumbers;
+        }
+
+        function accessPromiseResults(promises) {
+            // Iterate over each promise in the array
+            //promises.forEach(promise => {
+                // Use Promise.allSettled() to handle all promises
+                Promise.allSettled(promises).then(results => {
+                results.forEach(result => {
+                    if (result.status === "fulfilled") {
+                    console.log('\tPromiseResult:', result.value);
+                    // // Access specific properties
+                    // console.log('Response Time:', result.value.responseTime);
+                    // console.log('User ID:', result.value.userID);
+                    } else {
+                    console.error('Promise was rejected:', result.reason);
+                    }
+                });
+                });
+            //});
+        }
+
+        function isDirectory(path) {
+            if (path.split("/").length > 1 && path.split("/")[1].length > 0) {
+                return true;
+            } else {
+                return false;
+            }
+        }
+
+        function getDirectory(path) {
+            return path.split("/")[0];
+        }
+
+        async function initializeCameraStream() {
+            try {
+                const cameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { min: 320, ideal: 320 },
+                        height: { min: 240, ideal: 240 },
+                        facingMode: { ideal: "user" }
+                    },
+                    audio: false
+                });
+
+                mediaRecorder = new MediaRecorder(cameraStream);
+                mediaRecorder.ondataavailable = handleDataAvailable;
+                mediaRecorder.onstop = handleStop;
+
+                mediaRecorder.onstart = () => {
+                    console.log('MediaRecorder started');
+                };
+
+                mediaRecorder.onpause = () => {
+                    console.log('MediaRecorder paused');
+                };
+
+                mediaRecorder.onresume = () => {
+                    console.log('MediaRecorder resumed');
+                };
+
+                mediaRecorder.onerror = (event) => {
+                    console.error('MediaRecorder error:', event.error);
+                };
+
+                document.getElementById("myVideo").srcObject = cameraStream;
+                mediaRecorder.start(1000); // Request data every second
+                console.log("Created new mediaRecorder:", mediaRecorder);
+            } catch (error) {
+                console.error('Error accessing camera:', error);
+            }
+        }
+
+        function handleDataAvailable(event) {
+            //console.log("Attempting to handle data with size: " + event.data.size);
+            if (event.data.size > 0) {
+                recordedChunks.push(event.data);
+                //console.log('Data available:', event.data);
+            }
+        }
+
+        function handleStop() {
+            const recordedBlob = new Blob(recordedChunks, { type: 'video/webm' });
+            const videoUrl = URL.createObjectURL(recordedBlob);
+
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = videoUrl;
+            console.log("Downloading this video... " + videoUrl);
+            var subjID = 'defaultID'; // Replace this with actual participantID if available
+            a.download = 'recorded-video' + subjID + '.webm';
+            document.body.appendChild(a);
+            a.click();
+
+            window.URL.revokeObjectURL(videoUrl);
+            recordedChunks = [];
+            console.log("STOP HANDLED!");
+
+            uploadVideo(recordedBlob);
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+        }
+
+        async function uploadVideo(blob) {
+            const reader = new FileReader();
+            reader.onloadend = function() {
+                const arrayBuffer = reader.result;
+                const binaryData = new Uint8Array(arrayBuffer);
+
+                fetch('/upload/video', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/octet-stream'
+                    },
+                    body: binaryData
+                }).then(response => response.json())
+                  .then(data => console.log('Video uploaded successfully:', data))
+                  .catch(err => console.error('Error uploading video:', err));
+            };
+            reader.readAsArrayBuffer(blob);
+        }
+
+
+        async function uploadToLeaderboard() {
+            const data = {
+                userID: generateRandomString(),
+                responseTime: Math.round(Math.random() * 1000)
+            };
+
+            try {
+                const response = await fetch('http://localhost:3000/upload/leaderboard', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+
+                const responseData = await response.json();
+                console.log('Data uploaded successfully:', responseData);
+            } catch (error) {
+                console.error('Error sending data:', error);
+            }
+        }
+
+        async function fetchS3ObjectList() {
+
+            let users = [];
+
+            try {
+                const response = await fetch('http://localhost:3000/s3/list-objects');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const responseData = await response.json();
+                console.log('Successfully got objects from S3 buckets: ', responseData);
+                for (elem in responseData.data) {
+                    if (isDirectory(responseData.data[elem].Key)) {
+                        let directory =  getDirectory(responseData.data[elem].Key);
+                        if (directory == 'leaderboard') {
+                            try {
+                                // Clear previous messages and data
+
+                                const bucketName = 'cheesebucketlehighu'; // Replace with your actual bucket name
+                                const objectKey = responseData.data[elem].Key;     // Replace with your actual JSON object key
+
+                                users.push(getObjectFromS3(bucketName, objectKey));
+                            } catch (error) {
+                                console.error('Error fetching JSON object:', error);
+                                message.textContent = `Error fetching JSON object: ${error.message}`;
+                            }
+                        }
+                        
+                    }
+                }
+                console.log("USERS.length ",users.length)
+                accessPromiseResults(users);
+            
+            } catch (error) {
+                console.error('Error fetching S3 object list:', error);
+            }
+        }
+
+        function getObjectFromS3(bucket, key) {
+            const url = `http://localhost:3000/s3/get-object/bucket/${bucket}/key/${encodeURIComponent(key)}`;
+            
+            return fetch(url)
+                .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+                })
+                .then(data => {
+                console.log('Data received:', data);
+                // Handle the received data
+                return data;  // Return the data from this promise
+                })
+                .catch(error => {
+                console.error('Error fetching object:', error);
+                // Handle the error
+                throw error; // Re-throw the error for the caller to handle
+            });
+        }
+        
+
+        initializeCameraStream();
+    </script>
+</body>
+</html>
